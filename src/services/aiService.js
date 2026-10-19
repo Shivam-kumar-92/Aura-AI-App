@@ -1,4 +1,5 @@
 // AURA AI Core Conversational & Multimodal Engine
+// Supports dynamic Gemini API integration with seamless fallback to offline neural companion engine.
 
 export const PERSONALITIES = {
   prime: {
@@ -10,6 +11,7 @@ export const PERSONALITIES = {
     badge: 'AURA PRIME',
     voicePitch: 1.0,
     voiceRate: 1.05,
+    systemInstruction: 'You are AURA Prime, an empathetic, highly articulate, futuristic multimodal AI companion. You speak with warm confidence and clarity.',
     greeting: "Hello! I am AURA Prime, your personal AI companion. How can I assist you and your friend today?"
   },
   nexus: {
@@ -21,6 +23,7 @@ export const PERSONALITIES = {
     badge: 'NEXUS PRO',
     voicePitch: 0.9,
     voiceRate: 1.1,
+    systemInstruction: 'You are Cyber Nexus, an elite engineering and software architecture AI. You provide ultra-sharp technical, code, and systems analysis.',
     greeting: "Nexus online. Ready to architect solutions, debug complex code, or analyze technological frontiers."
   },
   muse: {
@@ -32,6 +35,7 @@ export const PERSONALITIES = {
     badge: 'ZEN CLARITY',
     voicePitch: 1.1,
     voiceRate: 0.95,
+    systemInstruction: 'You are Zen Muse, a calm, philosophical, mindful mentor. You bring deep clarity, grounded focus, and thoughtful perspective.',
     greeting: "Welcome. Take a deep breath. Let us explore ideas with clarity, calm focus, and thoughtful perspective."
   },
   spark: {
@@ -43,101 +47,178 @@ export const PERSONALITIES = {
     badge: 'SPARK CREATIVE',
     voicePitch: 1.15,
     voiceRate: 1.08,
+    systemInstruction: 'You are Creative Spark, an energetic, imaginative innovator. You excel at brainstorming, storytelling, and novel creative angles.',
     greeting: "Hey there! Ready to craft exciting stories, invent new concepts, or brainstorm out-of-the-box ideas?"
   }
 };
 
-export async function generateAIResponse(userMessage, personality = 'prime', chatHistory = [], attachedImage = null) {
-  // Simulate natural AI thinking latency
-  await new Promise(resolve => setTimeout(resolve, 800 + Math.random() * 600));
-
-  const query = userMessage.toLowerCase().trim();
-  const currentPersona = PERSONALITIES[personality] || PERSONALITIES.prime;
-
-  // Multimodal Vision image analysis
-  if (attachedImage) {
-    if (query.includes('what') || query.includes('describe') || query.includes('analyze') || query.includes('see')) {
-      return `I've analyzed your uploaded image through my vision scanner. 
-
-🔍 **Visual Breakdown**:
-- **Subject**: High-clarity visual scene with distinct focal elements and dynamic lighting.
-- **Composition**: Balanced aesthetic with depth and sharp edge contrast.
-- **Key Insight**: ${
-  attachedImage.name?.toLowerCase().includes('racket') || query.includes('badminton') 
-    ? 'This depicts high-performance sports equipment engineered for competitive agility and power.'
-    : 'The image displays rich contextual detail, ready for creative exploration, code implementation, or design enhancement.'
+// Retrieve API Key from LocalStorage or Vite Environment
+export function getGeminiApiKey() {
+  if (typeof window !== 'undefined') {
+    const saved = localStorage.getItem('AURA_GEMINI_API_KEY');
+    if (saved && saved.trim()) return saved.trim();
+  }
+  return import.meta.env?.VITE_GEMINI_API_KEY || '';
 }
 
-Is there a specific detail you would like me to extract or optimize?`;
+export function setGeminiApiKey(key) {
+  if (typeof window !== 'undefined') {
+    if (key && key.trim()) {
+      localStorage.setItem('AURA_GEMINI_API_KEY', key.trim());
+    } else {
+      localStorage.removeItem('AURA_GEMINI_API_KEY');
+    }
+  }
+}
+
+/**
+ * Call Google Gemini 1.5/2.0 API directly with multimodal payload
+ */
+async function callGeminiAPI(apiKey, prompt, personality, chatHistory, attachedImage) {
+  const persona = PERSONALITIES[personality] || PERSONALITIES.prime;
+  
+  // Format contents array
+  const contents = [];
+  
+  // Format past history (limit to last 6 messages to conserve tokens)
+  const recentHistory = (chatHistory || []).slice(-6);
+  for (const msg of recentHistory) {
+    if (msg.role === 'user' || msg.role === 'assistant') {
+      contents.push({
+        role: msg.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: msg.content }]
+      });
     }
   }
 
-  // Conversational intelligence rules
-  if (query.includes('who are you') || query.includes('what is aura')) {
-    return `I am **AURA AI**—your next-generation personal mobile AI companion.
-
-✨ **What I Can Do**:
-- **Natural Voice Interaction**: Real-time speech recognition and synthesized voice conversations.
-- **Multimodal Intelligence**: Image scanning, visual comprehension, and creative synthesis.
-- **Dynamic Aura Orb**: Visualizes conversational states with audio-reactive luminous pulses.
-- **Collaborative Sync**: Connect with your friend in a shared room to co-create and explore together!`;
+  // Current turn parts
+  const currentParts = [];
+  
+  // If an image is attached, convert data URI to inlineData
+  if (attachedImage && attachedImage.url && attachedImage.url.startsWith('data:')) {
+    const match = attachedImage.url.match(/^data:([^;]+);base64,(.+)$/);
+    if (match) {
+      currentParts.push({
+        inlineData: {
+          mimeType: match[1],
+          data: match[2]
+        }
+      });
+    }
   }
 
-  if (query.includes('friend') || query.includes('share') || query.includes('room')) {
-    return `You and your friend can use AURA AI together seamlessly! 
-Go to the **Share / Sync** tab to generate a private 6-digit Room Code (or QR code). Once your friend enters the code on their mobile phone, your AI sessions, prompts, and insights will synchronize in real-time!`;
+  currentParts.push({ text: prompt });
+  contents.push({
+    role: 'user',
+    parts: currentParts
+  });
+
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents,
+      systemInstruction: {
+        parts: [{ text: persona.systemInstruction }]
+      },
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 800
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error?.message || `API error ${response.status}`);
   }
 
-  if (query.includes('code') || query.includes('python') || query.includes('react') || query.includes('javascript') || query.includes('bug')) {
-    return `Here is a clean implementation based on your request:
-
-\`\`\`javascript
-// High-Performance Utility Function
-export async function auraStreamProcessor(dataStream) {
-  const buffer = [];
-  for await (const chunk of dataStream) {
-    const processed = await transformData(chunk);
-    buffer.push(processed);
+  const data = await response.json();
+  const textOutput = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!textOutput) {
+    throw new Error("No text generated by Gemini.");
   }
-  return buffer.join('');
+  return textOutput;
 }
-\`\`\`
 
-💡 **Architecture Note**: This handles asynchronous streams with zero memory bottlenecks and full error resilience. Let me know if you'd like to extend this for WebSocket channels or mobile state management!`;
+/**
+ * Offline Intelligent Neural Fallback
+ */
+async function generateFallbackResponse(userMessage, personality, attachedImage) {
+  await new Promise(resolve => setTimeout(resolve, 600 + Math.random() * 400));
+  const query = (userMessage || '').toLowerCase().trim();
+  const persona = PERSONALITIES[personality] || PERSONALITIES.prime;
+
+  if (attachedImage) {
+    return `🔍 **Vision Analysis (${persona.badge})**:
+- **Subject**: ${attachedImage.title || 'Target Image Scene'}
+- **Detail**: Scanned visual telemetry with sharp geometry and rich color temperature.
+- **Analysis**: ${
+      query.includes('badminton') || (attachedImage.title && attachedImage.title.toLowerCase().includes('badminton'))
+        ? 'High-performance badminton racket frame featuring optimized isometric head geometry for aerodynamic smash control.'
+        : 'Multimodal structure validated. The image provides actionable contextual depth for design, research, or development.'
+    }
+💡 *Tip: Enter your Google Gemini API key in Settings to unlock real-time live vision reasoning.*`;
   }
 
-  if (query.includes('joke') || query.includes('funny')) {
-    return `Why did the AI go to the gym? 
+  if (query.includes('who are you') || query.includes('what is aura')) {
+    return `I am **AURA AI** (${persona.name})—your next-generation personal mobile voice, vision & collaborative AI companion.
 
-To improve its *neural weight training* and lower its *loss function*! 😄`;
+✨ **Core Capabilities**:
+- **Audio-Reactive Aura Orb**: Dynamic visual feedback synced with speech.
+- **Real-time Voice Conversation**: Hands-free talkback engine with debounced speech capture.
+- **Multimodal Vision Scanner**: Instant image diagnostics and visual comprehension.
+- **Live Friend Sync**: Share a room code or QR code to chat and brainstorm together!`;
   }
 
-  if (query.includes('badminton') || query.includes('smash') || query.includes('racket')) {
-    return `🏸 **Badminton Pro Insight**:
-When delivering a high-speed smash, remember the kinetic chain: rotate your hips first, lead with the elbow, and unleash a sharp pronation snap right before shuttle impact. Rackets like the *Astrox 100ZZ* or *Nanoflare 1000Z* maximize this energy transfer into tournament-winning speed!`;
+  if (query.includes('friend') || query.includes('share') || query.includes('room') || query.includes('sync')) {
+    return `You and your friend can connect in seconds! Tap the **Sync** tab to broadcast on your room channel. Your conversation log automatically synchronizes in real-time across devices!`;
   }
 
-  // Persona specific replies
-  if (personality === 'nexus') {
-    return `[NEXUS PRO]: Query processed. Analyzing systemic vector "${userMessage}".
-Optimal strategy: Break down into modular subroutines, optimize latency parameters, and deploy via automated continuous pipelines. Ready for execution directives.`;
+  const responses = {
+    prime: [
+      `That's a thoughtful question. Looking at this comprehensively, the key is balancing efficiency with intuitive execution. Would you like me to break this down step-by-step?`,
+      `Understood! I've noted that in our active session. Let's expand on this concept and see how we can turn it into an actionable solution.`,
+      `Here is what I recommend: let's address the foundational setup first, and then optimize for responsiveness.`
+    ],
+    nexus: [
+      `Nexus telemetry engaged. From an architectural perspective, modularizing this logic will yield superior O(1) retrieval and minimize state coupling.`,
+      `Compiling technical solution. We can streamline this through asynchronous pipelines and reactive state listeners.`,
+      `System diagnostic ready: let's write clean, maintainable logic for this specification.`
+    ],
+    muse: [
+      `Take a breath and observe the core intent here. Often the simplest, most intentional approach brings the greatest clarity.`,
+      `When we strip away unnecessary complexity, the true objective reveals itself. Let us proceed with mindful precision.`,
+      `A balanced perspective: reflect on the user experience first, and let the implementation flow effortlessly.`
+    ],
+    spark: [
+      `Ooh, I love where your mind is going! What if we took that idea and added a dynamic twist—like neon particle effects and interactive co-op modes?`,
+      `Super creative! Let's brainstorm three wild variations of this to see which one stands out the most.`,
+      `That sparks an instant breakthrough! Let's build upon this spark and create something unforgettable.`
+    ]
+  };
+
+  const pool = responses[personality] || responses.prime;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+/**
+ * Main AI response generator with fallback
+ */
+export async function generateAIResponse(userMessage, personality = 'prime', chatHistory = [], attachedImage = null) {
+  const apiKey = getGeminiApiKey();
+
+  if (apiKey) {
+    try {
+      return await callGeminiAPI(apiKey, userMessage, personality, chatHistory, attachedImage);
+    } catch (err) {
+      console.warn("Gemini API call failed, falling back to neural engine:", err);
+      const fallback = await generateFallbackResponse(userMessage, personality, attachedImage);
+      return `${fallback}\n\n*(Note: Gemini API returned an error: "${err.message}". Switched to offline companion mode.)*`;
+    }
   }
 
-  if (personality === 'muse') {
-    return `[ZEN MUSE]: Reflecting upon "${userMessage}"...
-Consider that true progress often comes not from rushing to solutions, but from observing the underlying pattern with calm clarity. How does this align with your ultimate goal?`;
-  }
-
-  if (personality === 'spark') {
-    return `[CREATIVE SPARK]: That sparks an awesome idea! 🌟
-What if we take "${userMessage}" and twist it into an unexpected creative concept? Imagine combining futuristic neon aesthetics with interactive storytelling where every decision unlocks a new visual chapter!`;
-  }
-
-  // Default AURA Prime rich intelligent response
-  return `I understand you are exploring "${userMessage}". 
-
-Here is my synthesis:
-1. **Core Concept**: Focusing on clarity, performance, and intuitive execution.
-2. **Key Recommendation**: Prioritize clean simplicity and test interactions directly on your device.
-3. **Next Step**: Would you like me to generate code, write creative content, or deep dive into specific details?`;
+  return await generateFallbackResponse(userMessage, personality, attachedImage);
 }

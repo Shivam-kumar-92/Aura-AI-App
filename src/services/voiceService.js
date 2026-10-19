@@ -1,4 +1,4 @@
-// AURA AI Voice & Audio Engine
+// AURA AI Voice & Audio Engine with Mobile Silence-Debounce & Fallback
 
 class VoiceEngine {
   constructor() {
@@ -8,12 +8,14 @@ class VoiceEngine {
     this.isSpeaking = false;
     this.onResultCallback = null;
     this.onStateChangeCallback = null;
+    this.silenceTimer = null;
+    this.accumulatedTranscript = '';
 
     if (typeof window !== 'undefined') {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SpeechRecognition) {
         this.recognition = new SpeechRecognition();
-        this.recognition.continuous = false;
+        this.recognition.continuous = true;
         this.recognition.interimResults = true;
         this.recognition.lang = 'en-US';
 
@@ -25,23 +27,50 @@ class VoiceEngine {
         this.recognition.onend = () => {
           this.isListening = false;
           this.notifyState();
-        };
-
-        this.recognition.onresult = (event) => {
-          const transcript = Array.from(event.results)
-            .map(result => result[0].transcript)
-            .join('');
-          
-          if (this.onResultCallback) {
-            const isFinal = event.results[0].isFinal;
-            this.onResultCallback(transcript, isFinal);
+          // Clear any pending debounce timer
+          if (this.silenceTimer) {
+            clearTimeout(this.silenceTimer);
+            this.silenceTimer = null;
           }
         };
 
+        this.recognition.onresult = (event) => {
+          let interimText = '';
+          let finalText = '';
+
+          for (let i = 0; i < event.results.length; i++) {
+            const transcript = event.results[i][0].transcript;
+            if (event.results[i].isFinal) {
+              finalText += transcript;
+            } else {
+              interimText += transcript;
+            }
+          }
+
+          const currentText = finalText || interimText;
+          if (!currentText.trim()) return;
+
+          // Notify UI of interim live transcript
+          if (this.onResultCallback) {
+            this.onResultCallback(currentText, false);
+          }
+
+          // Debounce detection: wait 1000ms of user silence before automatically submitting
+          if (this.silenceTimer) clearTimeout(this.silenceTimer);
+          this.silenceTimer = setTimeout(() => {
+            if (this.onResultCallback && currentText.trim().length > 0) {
+              this.onResultCallback(currentText.trim(), true);
+              this.stopListening();
+            }
+          }, 1100);
+        };
+
         this.recognition.onerror = (event) => {
-          console.warn('Speech recognition error:', event.error);
-          this.isListening = false;
-          this.notifyState();
+          console.warn('Speech recognition warning:', event.error);
+          if (event.error !== 'no-speech') {
+            this.isListening = false;
+            this.notifyState();
+          }
         };
       }
     }
@@ -61,19 +90,25 @@ class VoiceEngine {
     this.onStateChangeCallback = onStateChange;
 
     if (!this.recognition) {
-      alert('Speech recognition is not supported in this browser. You can still type queries!');
+      alert('Speech recognition is not supported in this browser. You can type queries via the chat input!');
       return;
     }
 
     try {
       this.stopSpeaking();
+      if (this.silenceTimer) clearTimeout(this.silenceTimer);
       this.recognition.start();
     } catch (err) {
-      console.warn('Recognition start error:', err);
+      // In case recognition was already active
+      console.warn('Recognition start caught:', err);
     }
   }
 
   stopListening() {
+    if (this.silenceTimer) {
+      clearTimeout(this.silenceTimer);
+      this.silenceTimer = null;
+    }
     if (this.recognition && this.isListening) {
       try {
         this.recognition.stop();
@@ -88,11 +123,12 @@ class VoiceEngine {
 
     this.stopSpeaking();
 
-    // Clean markdown symbols for cleaner voice speech
+    // Clean markdown symbols for natural voice speech
     const cleanText = text
       .replace(/[*#`_~]/g, '')
       .replace(/\[.*?\]/g, '')
-      .replace(/https?:\/\/\S+/g, 'link');
+      .replace(/https?:\/\/\S+/g, 'link')
+      .replace(/🔍|✨|💡|📷|⚡/g, '');
 
     const utterance = new SpeechSynthesisUtterance(cleanText);
     utterance.pitch = pitch;
@@ -127,7 +163,7 @@ class VoiceEngine {
   }
 
   stopSpeaking() {
-    if (this.synth && this.synth.speaking) {
+    if (this.synth && (this.synth.speaking || this.synth.pending)) {
       this.synth.cancel();
       this.isSpeaking = false;
       this.notifyState();
